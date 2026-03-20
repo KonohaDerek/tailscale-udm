@@ -21,17 +21,27 @@ to provide a persistent service and runs using Tailscale's usermode networking f
 
 ## Compatibility
 
-**ⓘ You can confirm your OS version by running `/usr/bin/ubnt-device-info firmware_detail`**
+**ⓘ You can confirm your UniFi OS (UOS) version by running `/usr/bin/ubnt-device-info firmware_detail`**
 
-This package is compatible with UniFi OS 2.x+ and is known to work on the following devices:
+This package is compatible with UniFi OS 2.x or later and is known to work on the following variants of UniFi devices:
 
-- UniFi Dream Machine (UDM)
-- UniFi Dream Machine Pro (UDM Pro)
-- UniFi Dream Router (UDR)
-- UniFi Dream Machine Special Edition (UDM-SE)
-- UniFi Cloud Key Gen 2 (UCK-G2)
-- UniFi Cloud Key Gen 2 Plus (UCK-G2-PLUS)
-- UniFi NAS Pro
+- Any variant of the UniFi Cloud Gateway (UCG)
+- Any variant of the UniFi Cloud Key Gen 2 (UCK-G2)
+- Any variant of the UniFi Dream Machine (UDM)
+- Any variant of the UniFi Dream Router (UDR)
+- Any variant of the UniFi Dream Wall (UDW)
+- Any variant of the UniFi Express (UX)
+- Any variant of the UniFi NAS Pro (UNAS-PRO)
+- Any variant of a UniFi device running UniFi OS 2.x or later not listed above or below
+
+This package is **NOT** compatible with the following variants of UniFi devices:
+
+- Any variant of the UniFi Cloud Key Gen 1 (UCK-G1)
+- Any variant of the UniFi Security Gateway (USG)
+- Any variant of the UniFi Travel Router (UTR)
+- Any variant of a UniFi device running BusyBox
+- Any variant of a UniFi device running UniFi OS 1.x (the legacy OS on UDM/UDM Pro)
+- Any variant of an EoL UniFi device not listed above
 
 We expect that it should function on most consumer-grade UniFi devices without issue, but if you
 do run into any problems, please [open an issue](https://github.com/SierraSoftworks/tailscale-udm/issues)
