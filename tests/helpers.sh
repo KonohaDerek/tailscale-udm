@@ -29,7 +29,7 @@ assert_eq() {
     local ACTUAL_OUTPUT="${1?You must specify the actual output first argument}"
     local EXPECTED_OUTPUT="${2?You must specify the expected output as the second argument}"
     local TEST_NAME="${3?You must specify the test name as the third argument}"
-    
+
     if [ "$ACTUAL_OUTPUT" = "$EXPECTED_OUTPUT" ]; then
         echo "  ✅  $TEST_NAME"
     else
@@ -46,7 +46,7 @@ assert_contains() {
     local EXPECTED_OUTPUT="${2?You must specify the expected output as the second argument}"
     local TEST_NAME="${3?You must specify the test name as the third argument}"
 
-    
+
     if (echo "$ACTUAL_OUTPUT" | grep -qe "$EXPECTED_OUTPUT"); then
         echo "  ✅  $TEST_NAME"
     else

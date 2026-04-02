@@ -43,7 +43,7 @@ if command -v openssl >/dev/null 2>&1; then
     if [ -n "$subject" ]; then
         assert_contains "$subject" "CN" "Certificate subject contains CN"
     fi
-    
+
     # Extract dates
     not_after=$(openssl x509 -noout -enddate -in "$WORKDIR/test.crt" 2>/dev/null || echo "")
     if [ -n "$not_after" ]; then
