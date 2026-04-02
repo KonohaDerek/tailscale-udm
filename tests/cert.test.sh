@@ -53,7 +53,7 @@ mock_tailscale_cert() {
                 ;;
         esac
     done
-    
+
     if [ -n "\$cert_file" ] && [ -n "\$key_file" ]; then
         echo "CERTIFICATE" > "\$cert_file"
         echo "PRIVATE KEY" > "\$key_file"
@@ -84,7 +84,7 @@ chmod +x "${WORKDIR}/tailscale"
 # Test certificate generation
 test_cert_generate() {
     touch "$TAILSCALED_SOCK"  # Mock running state
-    
+
     # Test generate
     output=$("${ROOT}/package/manage.sh" cert generate 2>&1)
     assert_contains "$output" "Certificate generated successfully" "Output contains success message"
@@ -104,11 +104,11 @@ test_cert_generate() {
 test_cert_renew() {
     mkdir -p "$TAILSCALE_ROOT/certs"
     touch "$TAILSCALED_SOCK"  # Mock running state
-    
+
     # Create existing certificates
     echo "OLD CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
     echo "OLD KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
-    
+
     # Test renew
     output=$("${ROOT}/package/manage.sh" cert renew 2>&1)
     assert_contains "$output" "Certificate renewed successfully" "Output contains success message"
@@ -123,7 +123,7 @@ test_cert_renew() {
 # Test certificate listing
 test_cert_info() {
     mkdir -p "$TAILSCALE_ROOT/certs"
-    
+
     # Create test certificates
     echo "CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
     echo "KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
@@ -141,7 +141,7 @@ test_cert_info() {
 # Test when tailscale is not running
 test_cert_not_running() {
     mkdir -p "$TAILSCALE_ROOT"
-    
+
     # Mock not running state
     rm -f "$TAILSCALED_SOCK"
 
