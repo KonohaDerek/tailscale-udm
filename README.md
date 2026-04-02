@@ -143,7 +143,7 @@ sysctl net.ipv4.ip_forward
 The quickest way to switch to TUN mode is to install the latest version of tailscale-unifi, which will automatically configure Tailscale to use TUN mode.
 
 ```bash
-curl -sSLq https://raw.github.com/SierraSoftworks/tailscale-unifi/main/install.sh | sh
+curl -sSLq https://raw.githubusercontent.com/SierraSoftworks/tailscale-unifi/main/install.sh | sh
 ```
 
 ##### Manually Switching to TUN Mode
@@ -197,9 +197,9 @@ For more details on available options, see the official [tailscale up command do
 
 ### Why can't I see a network interface for Tailscale?
 
-Legacy versions of the tailscale-unifi script configured Tailscale to run in userspace networking mode on the UDM rather than as a TUN interface, which meant you wouldn't see it in the `ip addr` list.
+Legacy versions of the tailscale-udm script configured Tailscale to run in userspace networking mode on the UDM rather than as a TUN interface, which meant you wouldn't see it in the `ip addr` list.
 
-If you are running an older version of tailscale-unifi, you can switch to TUN mode by following the [instructions above](#manually-switching-to-tun-mode).
+If you are running an older version of tailscale-udm, you can switch to TUN mode by following the [instructions above](#manually-switching-to-tun-mode).
 
 ### Does this support Tailscale SSH?
 
