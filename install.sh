@@ -61,6 +61,9 @@ tar xzf "${WORKDIR}/tailscale.tgz" -C "$(dirname -- "${PACKAGE_ROOT}")"
 # Update tailscale-env with modified values
 if [ -n "${TAILSCALED_FLAGS:-}" ]; then
   echo "TAILSCALED_FLAGS=\"${TAILSCALED_FLAGS}\"" >> "$PACKAGE_ROOT/tailscale-env"
+elif [ ! -e /dev/net/tun ]; then
+  echo "TUN device (/dev/net/tun) not found, defaulting to userspace networking."
+  echo 'TAILSCALED_FLAGS="--tun userspace-networking"' >> "$PACKAGE_ROOT/tailscale-env"
 fi
 
 # Run the setup script to ensure that Tailscale is installed
