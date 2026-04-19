@@ -12,7 +12,7 @@ export PACKAGE_ROOT="${ROOT}/package"
 export TAILSCALE_ROOT="${WORKDIR}"
 export TAILSCALED_SOCK="${WORKDIR}/tailscaled.sock"
 
-export PATH="${WORKDIR}:${PATH}"
+export PATH="${WORKDIR}:/usr/bin:/bin:/usr/sbin:/sbin"
 mock "${WORKDIR}/ubnt-device-info" "2.0.0"
 mock "${WORKDIR}/systemctl" "" 1
 

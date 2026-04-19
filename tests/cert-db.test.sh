@@ -9,76 +9,100 @@ trap 'rm -rf ${WORKDIR}' EXIT
 
 export PATH="${WORKDIR}:${PATH}"
 export TAILSCALE_ROOT="${WORKDIR}"
+export SQL_CAPTURE_PATH="${WORKDIR}/captured.sql"
 
-# Test database registration script
-echo "Testing certificate database registration..."
+cat > "$WORKDIR/openssl" <<'EOF'
+#!/usr/bin/env bash
 
-# Create test certificate and key
+if [ "$1" != "x509" ]; then
+    echo "Unexpected openssl command: $*" >&2
+    exit 1
+fi
+
+shift
+
+case "$1" in
+    -noout)
+        shift
+        case "$1" in
+            -startdate)
+                echo "notBefore=Jul 29 09:27:20 2025 GMT"
+                ;;
+            -enddate)
+                echo "notAfter=Oct 27 09:27:19 2025 GMT"
+                ;;
+            -subject)
+                echo "subject=CN = wandi-gateway.taildb452.ts.net"
+                ;;
+            -issuer)
+                echo "issuer=CN = E5"
+                ;;
+            -serial)
+                echo "serial=1234ABCD"
+                ;;
+            -fingerprint)
+                echo "sha256 Fingerprint=AA:BB:CC:DD"
+                ;;
+            *)
+                echo "Unexpected openssl -noout arguments: $*" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    -text)
+        echo "        Version: 3 (0x2)"
+        ;;
+    *)
+        echo "Unexpected openssl arguments: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$WORKDIR/openssl"
+
+cat > "$WORKDIR/psql" <<'EOF'
+#!/usr/bin/env bash
+cat > "$SQL_CAPTURE_PATH"
+EOF
+chmod +x "$WORKDIR/psql"
+
+cat > "$WORKDIR/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "-u" ]; then
+    shift 2
+fi
+exec "$@"
+EOF
+chmod +x "$WORKDIR/sudo"
+
 cat > "$WORKDIR/test.crt" <<'EOF'
 -----BEGIN CERTIFICATE-----
-MIIDrDCCAzGgAwIBAgISBbD85QuQft/Jp6qlAOSNfxF0MAoGCCqGSM49BAMDMDIx
-CzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQswCQYDVQQDEwJF
-NTAeFw0yNTA3MjkwOTI3MjBaFw0yNTEwMjcwOTI3MTlaMCkxJzAlBgNVBAMTHnVk
-bS1wcm8td2FuZGkudGFpbGRiNDUyLnRzLm5ldDBZMBMGByqGSM49AgEGCCqGSM49
-AwEHA0IABNwmXCgC7McRGNBwjP34VJzTkAMq2jWutgOyPzfYBW/3nO24zSk2Z6Jf
-djYgD35djCyVfDL54uL96XNB8gumM0o=
+MOCK CERTIFICATE
 -----END CERTIFICATE-----
 EOF
 
 cat > "$WORKDIR/test.key" <<'EOF'
------BEGIN EC PRIVATE KEY-----
-MHcCAQEEIBh5+moHGwZBXdqxDsqo8W3SSakNlVFzOhCatdfprOYRoAoGCCqGSM49
-AwEHoUQDQgAE3CZcKALsxxEY0HCM/fhUnNOQAyraNa62A7I/N9gFb/ec7bjNKTZn
-ol92NiAPfl2MLJV8Mvni4v3pc0HyC6YzSg==
------END EC PRIVATE KEY-----
+-----BEGIN PRIVATE KEY-----
+MOCK PRIVATE KEY
+-----END PRIVATE KEY-----
 EOF
 
-# Test UUID generation
-#test_uuid="12345678-1234-1234-1234-123456789012"
+output=$("${ROOT}/package/helpers/cert-db-register.sh" \
+    "12345678-1234-1234-1234-123456789012" \
+    "$WORKDIR/test.crt" \
+    "$WORKDIR/test.key" \
+    "wandi-gateway.taildb452.ts.net" 2>&1)
 
-# Test certificate content extraction
-if command -v openssl >/dev/null 2>&1; then
-    # Extract subject CN
-    subject=$(openssl x509 -noout -subject -in "$WORKDIR/test.crt" 2>/dev/null || echo "")
-    if [ -n "$subject" ]; then
-        assert_contains "$subject" "CN" "Certificate subject contains CN"
-    fi
+assert_contains "$output" "Certificate registered in database with UUID: 12345678-1234-1234-1234-123456789012" "Helper reports successful registration"
 
-    # Extract dates
-    not_after=$(openssl x509 -noout -enddate -in "$WORKDIR/test.crt" 2>/dev/null || echo "")
-    if [ -n "$not_after" ]; then
-        assert_contains "$not_after" "notAfter" "Certificate has expiry date"
-    fi
-fi
-
-# Test SQL generation (mock)
-# Using a more portable sed command for macOS
-cert_content=$(awk '{printf "%s\\n", $0}' "$WORKDIR/test.crt" | sed 's/\\n$//')
-key_content=$(awk '{printf "%s\\n", $0}' "$WORKDIR/test.key" | sed 's/\\n$//')
-
-# Verify content transformation
-assert_contains "$cert_content" "BEGIN CERTIFICATE" "Certificate content includes header"
-assert_contains "$key_content" "BEGIN EC PRIVATE KEY" "Key content includes header"
-
-# Test install-unifi with database registration
-echo "Testing install-unifi with database registration..."
-
-# Create mock certificate files
-mkdir -p "$TAILSCALE_ROOT/certs"
-echo "MOCK CERTIFICATE" > "$TAILSCALE_ROOT/certs/test-host.crt"
-echo "MOCK PRIVATE KEY" > "$TAILSCALE_ROOT/certs/test-host.key"
-
-# Create mock database registration script
-cat > "$ROOT/package/helpers/cert-db-register.sh" <<'EOF'
-#!/bin/sh
-echo "Mock: Registering certificate $1 in database"
-exit 0
-EOF
-chmod +x "$ROOT/package/helpers/cert-db-register.sh"
-
-# Test that database registration script exists
-if [ -f "$ROOT/package/helpers/cert-db-register.sh" ]; then
-    assert_eq "0" "0" "Database registration script exists"
-fi
+captured_sql=$(cat "$SQL_CAPTURE_PATH")
+assert_contains "$captured_sql" "INSERT INTO user_certificates" "Generated SQL inserts into user_certificates"
+assert_contains "$captured_sql" "12345678-1234-1234-1234-123456789012" "Generated SQL includes the certificate UUID"
+assert_contains "$captured_sql" "Tailscale Certificate - wandi-gateway.taildb452.ts.net" "Generated SQL includes the certificate name"
+assert_contains "$captured_sql" '"CN":"wandi-gateway.taildb452.ts.net"' "Generated SQL includes the subject CN"
+assert_contains "$captured_sql" '"CN":"E5"' "Generated SQL includes the issuer CN"
+assert_contains "$captured_sql" "AABBCCDD" "Generated SQL normalizes the SHA256 fingerprint"
+assert_contains "$captured_sql" "MOCK CERTIFICATE" "Generated SQL includes the certificate body"
+assert_contains "$captured_sql" "MOCK PRIVATE KEY" "Generated SQL includes the private key body"
 
 echo "All certificate database tests passed!"
