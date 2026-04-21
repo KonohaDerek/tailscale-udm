@@ -286,7 +286,10 @@ tailscale_cert_install_unifi() {
       # Register certificate in PostgreSQL database for persistence
       if [ -f "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" ]; then
           echo "Registering certificate in database..."
-          sh "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" "$cert_uuid" "/data/unifi-core/config/$cert_uuid.crt" "/data/unifi-core/config/$cert_uuid.key" "$TAILSCALE_HOSTNAME"
+          if ! sh "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" "$cert_uuid" "/data/unifi-core/config/$cert_uuid.crt" "/data/unifi-core/config/$cert_uuid.key" "$TAILSCALE_HOSTNAME"; then
+              echo "Failed to register certificate in UniFi database"
+              exit 1
+          fi
       else
           echo "Warning: Database registration script not found. Certificate may not persist across restarts."
       fi

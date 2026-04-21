@@ -70,7 +70,11 @@ case "\$1" in
         ;;
     status)
         if [ "\$2" = "--json" ]; then
-            echo '{"BackendState": "Running", "Self": {"DNSName": "test-host.example.ts.net."}}'
+            if [ -f "${WORKDIR}/tailscaled.sock" ]; then
+                echo '{"BackendState": "Running", "Self": {"DNSName": "test-host.example.ts.net."}}'
+            else
+                echo '{"BackendState": "Stopped", "Self": {"DNSName": "test-host.example.ts.net."}}'
+            fi
         fi
         ;;
     *)
@@ -147,6 +151,7 @@ test_cert_not_running() {
 
     # Test generate when not running
     output=$("${ROOT}/package/manage.sh" cert generate 2>&1 || true)
+    assert_contains "$output" "Tailscale is not running" "Output contains not running message"
 }
 
 # Test help command
