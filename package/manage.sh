@@ -93,7 +93,9 @@ sync_tailscaled_environment() {
   sed -i '/^TS_[A-Za-z0-9_]*=/d' "$TAILSCALED_DEFAULTS_FILE"
 
   printf '%s\n' "$TAILSCALED_ENVIRONMENT_MARKER" >> "$TAILSCALED_DEFAULTS_FILE"
-  grep '^TS_[A-Za-z0-9_]*=' "$_environment_file" >> "$TAILSCALED_DEFAULTS_FILE" || true
+  if [ -f "$_environment_file" ]; then
+    grep '^TS_[A-Za-z0-9_]*=' "$_environment_file" >> "$TAILSCALED_DEFAULTS_FILE" || true
+  fi
 }
 
 tailscale_install() {
@@ -137,7 +139,7 @@ tailscale_install() {
   echo "Configuring Tailscaled startup flags..."
   sed -i "s@FLAGS=\"[^\"]*\"@FLAGS=\"--state /data/tailscale/tailscaled.state ${TAILSCALED_FLAGS}\"@" "$TAILSCALED_DEFAULTS_FILE" || {
       echo "Failed to configure Tailscaled startup flags"
-      echo "Check that the file $TAILSCALED_DEFAULTS_FILE exists and contains the line FLAGS=\"--state /data/tailscale/tailscale.state ${TAILSCALED_FLAGS}\"."
+      echo "Check that the file $TAILSCALED_DEFAULTS_FILE exists and contains the line FLAGS=\"--state /data/tailscale/tailscaled.state ${TAILSCALED_FLAGS}\"."
       exit 1
   }
 

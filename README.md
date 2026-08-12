@@ -107,7 +107,7 @@ Add any `TS_` environment variables to `/data/tailscale/tailscale-env`. For exam
 TS_TUN_DISABLE_TCP_GRO=1
 ```
 
-Then run `/data/tailscale/manage.sh install`. The installer replaces the managed environment section in `/etc/default/tailscaled` and restarts the `tailscaled` service with the new configuration. Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section.
+Then run `/data/tailscale/manage.sh install`. The installer replaces the managed environment section in `/etc/default/tailscaled` (and removes/overwrites any existing `TS_*` entries there) and restarts the `tailscaled` service with the new configuration. Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section.
 
 ### How do I advertise routes?
 
