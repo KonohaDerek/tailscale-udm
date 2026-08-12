@@ -4,6 +4,8 @@ set -e
 PACKAGE_ROOT="${PACKAGE_ROOT:-"$(dirname -- "$(readlink -f -- "$0";)")"}"
 export TAILSCALE_ROOT="${TAILSCALE_ROOT:-/data/tailscale}"
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+TAILSCALED_DEFAULTS_FILE="${TAILSCALED_DEFAULTS_FILE:-/etc/default/tailscaled}"
+TAILSCALED_ENVIRONMENT_MARKER="# tailscale-unifi managed environment"
 
 tailscale_status() {
   if ! command -v tailscale >/dev/null 2>&1; then
@@ -84,6 +86,16 @@ ensure_systemd_units() {
   systemctl enable --now tailscale-install.timer
 }
 
+sync_tailscaled_environment() {
+  _environment_file="${TAILSCALE_ROOT}/tailscale-env"
+
+  sed -i "/^${TAILSCALED_ENVIRONMENT_MARKER}$/,\$d" "$TAILSCALED_DEFAULTS_FILE"
+  sed -i '/^TS_[A-Za-z0-9_]*=/d' "$TAILSCALED_DEFAULTS_FILE"
+
+  printf '%s\n' "$TAILSCALED_ENVIRONMENT_MARKER" >> "$TAILSCALED_DEFAULTS_FILE"
+  grep '^TS_[A-Za-z0-9_]*=' "$_environment_file" >> "$TAILSCALED_DEFAULTS_FILE" || true
+}
+
 tailscale_install() {
   # shellcheck source=tests/os-release
   . "${OS_RELEASE_FILE:-/etc/os-release}"
@@ -116,18 +128,21 @@ tailscale_install() {
   fi
 
   echo "Configuring Tailscale port..."
-  sed -i "s/PORT=\"[^\"]*\"/PORT=\"${PORT:-41641}\"/" /etc/default/tailscaled || {
+  sed -i "s/PORT=\"[^\"]*\"/PORT=\"${PORT:-41641}\"/" "$TAILSCALED_DEFAULTS_FILE" || {
       echo "Failed to configure Tailscale port"
-      echo "Check that the file /etc/default/tailscaled exists and contains the line PORT=\"${PORT:-41641}\"."
+      echo "Check that the file $TAILSCALED_DEFAULTS_FILE exists and contains the line PORT=\"${PORT:-41641}\"."
       exit 1
   }
 
   echo "Configuring Tailscaled startup flags..."
-  sed -i "s@FLAGS=\"[^\"]*\"@FLAGS=\"--state /data/tailscale/tailscaled.state ${TAILSCALED_FLAGS}\"@" /etc/default/tailscaled || {
+  sed -i "s@FLAGS=\"[^\"]*\"@FLAGS=\"--state /data/tailscale/tailscaled.state ${TAILSCALED_FLAGS}\"@" "$TAILSCALED_DEFAULTS_FILE" || {
       echo "Failed to configure Tailscaled startup flags"
-      echo "Check that the file /etc/default/tailscaled exists and contains the line FLAGS=\"--state /data/tailscale/tailscale.state ${TAILSCALED_FLAGS}\"."
+      echo "Check that the file $TAILSCALED_DEFAULTS_FILE exists and contains the line FLAGS=\"--state /data/tailscale/tailscale.state ${TAILSCALED_FLAGS}\"."
       exit 1
   }
+
+  echo "Configuring Tailscaled environment..."
+  sync_tailscaled_environment
 
   echo "Restarting Tailscale daemon to detect new configuration..."
   systemctl restart tailscaled.service || {

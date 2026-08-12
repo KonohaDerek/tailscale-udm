@@ -4,6 +4,7 @@ set -e
 ROOT="$(dirname "$(dirname "$0")")"
 WORKDIR="$(mktemp -d || exit 1)"
 trap 'rm -rf ${WORKDIR}' EXIT
+REAL_SED="$(command -v sed)"
 
 # shellcheck source=tests/helpers.sh
 . "${ROOT}/tests/helpers.sh"
@@ -13,6 +14,7 @@ PACKAGE_ROOT="$(cd "${ROOT}/package" && pwd)"
 export PACKAGE_ROOT
 export TAILSCALE_ROOT="${WORKDIR}"
 export TAILSCALED_SOCK="${WORKDIR}/tailscaled.sock"
+export TAILSCALED_DEFAULTS_FILE="${WORKDIR}/tailscaled.defaults"
 export SYSTEMD_UNIT_DIR="${WORKDIR}/systemd"
 export OS_VERSION="v2"
 
@@ -22,8 +24,13 @@ export PATH="${WORKDIR}:${PATH}"
 mock "${WORKDIR}/apt-key" "--## apt-key mock: \$* ##--"
 mock "${WORKDIR}/tee" "--## tee mock: \$* ##--"
 mock "${WORKDIR}/apt" "--## apt mock: \$* ##--"
-mock "${WORKDIR}/sed" "--## sed mock: \$* ##--"
 mock "${WORKDIR}/ubnt-device-info" "2.0.0"
+cat > "${WORKDIR}/sed" <<EOF
+#!/usr/bin/env bash
+echo "\${@}" >> "${WORKDIR}/sed.args"
+exec "${REAL_SED}" "\$@"
+EOF
+chmod +x "${WORKDIR}/sed"
 # NB: `ln` is deliberately NOT mocked.  manage.sh no longer creates symlinks
 # (it copies unit files), so the only `ln` calls are the symlink fixtures the
 # tests below set up — those must use the real `ln` to be meaningful.
@@ -65,6 +72,13 @@ cp "${ROOT}/tests/os-release" "${WORKDIR}/os-release"
 export OS_RELEASE_FILE="${WORKDIR}/os-release"
 
 cp "${PACKAGE_ROOT}/tailscale-env" "${WORKDIR}/tailscale-env"
+printf '%s\n' 'TS_TUN_DISABLE_TCP_GRO=1' >> "${WORKDIR}/tailscale-env"
+cat > "${TAILSCALED_DEFAULTS_FILE}" <<EOF
+PORT="12345"
+FLAGS=""
+TS_TUN_DISABLE_TCP_GRO=0
+UNRELATED_SETTING="preserved"
+EOF
 
 # ── fresh install (clean SYSTEMD_UNIT_DIR) ────────────────────────────────────
 "${ROOT}/package/manage.sh" install; assert "Tailscale installer should run successfully"
@@ -76,6 +90,10 @@ sed_args=$(cat "${WORKDIR}/sed.args")
 assert_contains "$apt_first" "update" "The apt command should be called to update the package list"
 assert_contains "$apt_second" "install -y tailscale" "The apt command should be called with the command to install tailscale file"
 assert_contains "$sed_args" "--state /data/tailscale" "The defaults should be updated with state directory"
+assert_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "TS_TUN_DISABLE_TCP_GRO=1" "TS_ variables should be copied to the tailscaled defaults"
+assert_not_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "TS_TUN_DISABLE_TCP_GRO=0" "Existing TS_ variable values should be replaced"
+assert_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "UNRELATED_SETTING=\"preserved\"" "Unrelated tailscaled defaults should be preserved"
+assert_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "# tailscale-unifi managed environment" "Managed environment should be separated from the original defaults"
 [[ -f "${WORKDIR}/tailscaled.restarted" ]]; assert "tailscaled should have been restarted"
 [[ -f "${WORKDIR}/tailscaled.service.enabled" ]]; assert "tailscaled unit should be enabled"
 [[ -f "${WORKDIR}/systemctl.daemon-reload" ]]; assert "systemctl should have been reloaded"
@@ -97,6 +115,16 @@ ln -sf "${PACKAGE_ROOT}/tailscale-install.timer" \
 
 "${ROOT}/package/manage.sh" install; assert "Upgrade from symlink state should succeed without 'same file' error"
 
+[[ "$(grep -c '^TS_TUN_DISABLE_TCP_GRO=' "${TAILSCALED_DEFAULTS_FILE}")" -eq 1 ]]; assert "Repeated installs should not duplicate TS_ variables in the tailscaled defaults"
+[[ "$(grep -c '^# tailscale-unifi managed environment$' "${TAILSCALED_DEFAULTS_FILE}")" -eq 1 ]]; assert "Repeated installs should not duplicate the managed environment section"
+
+sed -i '/^TS_TUN_DISABLE_TCP_GRO=/d' "${WORKDIR}/tailscale-env"
+"${ROOT}/package/manage.sh" install; assert "Install should succeed after removing a TS_ variable"
+
+assert_not_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "TS_TUN_DISABLE_TCP_GRO=" "Removed TS_ variables should be removed from the tailscaled defaults"
+assert_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "UNRELATED_SETTING=\"preserved\"" "Removing a TS_ variable should preserve the original defaults"
+[[ "$(grep -c '^# tailscale-unifi managed environment$' "${TAILSCALED_DEFAULTS_FILE}")" -eq 1 ]]; assert "The empty managed environment section should remain singular"
+
 # After the fix the destination must be a regular file, not a symlink.
 # If rm -f silently failed and cp wrote through the symlink instead, the
 # destination would still appear as a file — only -L distinguishes the two.
@@ -112,7 +140,13 @@ mock "${WORKDIR}/curl" ""
 mock "${WORKDIR}/jq" ""
 reset_mock "${WORKDIR}/apt"
 
-update_out=$("${ROOT}/package/manage.sh" update 2>&1) || true
+NO_TAILSCALE_BIN="${WORKDIR}/no-tailscale-bin"
+mkdir -p "$NO_TAILSCALE_BIN"
+for command_name in bash cmp cp dirname grep readlink rm touch; do
+    ln -s "$(command -v "$command_name")" "$NO_TAILSCALE_BIN/$command_name"
+done
+
+update_out=$(PATH="${WORKDIR}:${NO_TAILSCALE_BIN}" "${ROOT}/package/manage.sh" update 2>&1) || true
 assert_not_contains "$update_out" "tailscale: not found" "update with tailscale absent does not emit 'tailscale: not found'"
 assert_contains "$(cat "${WORKDIR}/apt.args")" "install -y tailscale" "update with tailscale absent triggers an install"
 
