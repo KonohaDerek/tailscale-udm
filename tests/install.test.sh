@@ -164,7 +164,7 @@ case "\$1" in
     "is-enabled")    exit 0 ;;
     "enable")        touch "${WORKDIR}/\$2.enabled" ;;
     "daemon-reload") touch "${WORKDIR}/systemctl.daemon-reload" ;;
-    "start")         touch "${WORKDIR}/tailscaled.started" ;;
+    "start")         touch "${WORKDIR}/\$2.started" ;;
     "restart")       touch "${WORKDIR}/tailscaled.restarted" ;;
     *) echo "Unexpected command: \${1}"; exit 1 ;;
 esac
@@ -182,12 +182,23 @@ mock "${WORKDIR}/sleep" ""
 printf '[Unit]\n# stale\n' > "${SYSTEMD_UNIT_DIR}/tailscale-install.service"
 ln -sf "${PACKAGE_ROOT}/tailscale-install.timer" \
        "${SYSTEMD_UNIT_DIR}/tailscale-install.timer"
+mkdir -p "${TAILSCALE_ROOT}/certs"
+printf '%s\n' 'CERTIFICATE' > "${TAILSCALE_ROOT}/certs/test-host.example.ts.net.crt"
+printf '%s\n' 'PRIVATE KEY' > "${TAILSCALE_ROOT}/certs/test-host.example.ts.net.key"
+ln -sf "${PACKAGE_ROOT}/tailscale-cert-renewal.service" \
+       "${SYSTEMD_UNIT_DIR}/tailscale-cert-renewal.service"
+ln -sf "${PACKAGE_ROOT}/tailscale-cert-renewal.timer" \
+       "${SYSTEMD_UNIT_DIR}/tailscale-cert-renewal.timer"
 rm -f "${WORKDIR}/systemctl.daemon-reload"
 
 "${ROOT}/package/manage.sh" on-boot; assert "on-boot succeeds when Tailscale is already installed"
 
 cmp -s "${PACKAGE_ROOT}/tailscale-install.service" "${SYSTEMD_UNIT_DIR}/tailscale-install.service"; assert "on-boot rewrites a stale tailscale-install.service to match the package while Tailscale is healthy"
 [[ ! -L "${SYSTEMD_UNIT_DIR}/tailscale-install.timer" ]]; assert "on-boot rewrites a symlinked tailscale-install.timer as a regular file while Tailscale is healthy"
+[[ ! -L "${SYSTEMD_UNIT_DIR}/tailscale-cert-renewal.service" ]]; assert "on-boot rewrites a symlinked tailscale-cert-renewal.service as a regular file when certificates exist"
+[[ ! -L "${SYSTEMD_UNIT_DIR}/tailscale-cert-renewal.timer" ]]; assert "on-boot rewrites a symlinked tailscale-cert-renewal.timer as a regular file when certificates exist"
+[[ -f "${WORKDIR}/tailscale-cert-renewal.timer.enabled" ]]; assert "on-boot enables the certificate renewal timer when certificates exist"
+[[ -f "${WORKDIR}/tailscale-cert-renewal.timer.started" ]]; assert "on-boot starts the certificate renewal timer when certificates exist"
 [[ -f "${WORKDIR}/systemctl.daemon-reload" ]]; assert "on-boot runs daemon-reload after repairing stale units"
 
 # ── on-boot is safe to run repeatedly ─────────────────────────────────────────

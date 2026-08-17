@@ -217,19 +217,20 @@ Tailscale can generate valid HTTPS certificates for your device using Let’s En
 # Generate a certificate
 /data/tailscale/manage.sh cert generate
 
-# Renew an existing certificate before it expires
+# Renew an existing certificate before it expires. If it is the active UniFi
+# certificate, the same UniFi certificate record is updated automatically.
 /data/tailscale/manage.sh cert renew
 
 # Install certificate into UniFi OS
 /data/tailscale/manage.sh cert install-unifi
 
-# Restart UniFi Core to apply
+# Restart UniFi Core after the initial installation
 systemctl restart unifi-core
 ```
 
 Certificates expire after 90 days. The hostname is automatically determined from your Tailscale configuration.
 
-On UniFi OS, a systemd timer is automatically installed when you generate your first certificate. This timer runs weekly to check and renew certificates before they expire.
+On UniFi OS, a systemd timer is automatically installed when you generate your first certificate. This timer runs weekly to check and renew certificates before they expire. If the active UniFi certificate still matches the previously installed Tailscale certificate, renewal updates its files and database record and restarts UniFi Core. A different active certificate is left untouched.
 
 [tailscale-pr10828]: https://github.com/tailscale/tailscale/pull/10828
 [tailscale-pr14452]: https://github.com/tailscale/tailscale/pull/14452

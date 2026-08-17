@@ -6,6 +6,7 @@ export TAILSCALE_ROOT="${TAILSCALE_ROOT:-/data/tailscale}"
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 TAILSCALED_DEFAULTS_FILE="${TAILSCALED_DEFAULTS_FILE:-/etc/default/tailscaled}"
 TAILSCALED_ENVIRONMENT_MARKER="# tailscale-unifi managed environment"
+UNIFI_CONFIG_DIR="${UNIFI_CONFIG_DIR:-/data/unifi-core/config}"
 
 tailscale_status() {
   if ! command -v tailscale >/dev/null 2>&1; then
@@ -84,6 +85,25 @@ ensure_systemd_units() {
   systemctl daemon-reload
   systemctl enable tailscale-install.service
   systemctl enable --now tailscale-install.timer
+}
+
+ensure_cert_renewal_units() {
+  echo "Installing certificate auto-renewal timer..."
+  install_systemd_unit tailscale-cert-renewal.service
+  install_systemd_unit tailscale-cert-renewal.timer
+  systemctl daemon-reload
+  systemctl enable tailscale-cert-renewal.timer
+  systemctl start tailscale-cert-renewal.timer
+  echo "Certificate will be automatically renewed weekly"
+}
+
+repair_cert_renewal_units_if_configured() {
+  for _cert_file in "${TAILSCALE_ROOT}"/certs/*.crt; do
+    [ -f "$_cert_file" ] || continue
+    [ -f "${_cert_file%.crt}.key" ] || continue
+    ensure_cert_renewal_units
+    return 0
+  done
 }
 
 sync_tailscaled_environment() {
@@ -241,13 +261,7 @@ tailscale_cert_generate() {
       # Install (or repair) the cert-renewal units.  install_systemd_unit removes
       # any pre-existing symlink before copying (see its comment for why).
       if [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.service" ] && [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.timer" ]; then
-          echo "Installing certificate auto-renewal timer..."
-          install_systemd_unit tailscale-cert-renewal.service
-          install_systemd_unit tailscale-cert-renewal.timer
-          systemctl daemon-reload
-          systemctl enable tailscale-cert-renewal.timer
-          systemctl start tailscale-cert-renewal.timer
-          echo "Certificate will be automatically renewed weekly"
+          ensure_cert_renewal_units
       fi
   else
       echo "Failed to generate certificate. Ensure:"
@@ -258,10 +272,74 @@ tailscale_cert_generate() {
   fi
 }
 
+tailscale_cert_installed_unifi_uuid() {
+  _source_cert="$1"
+  _source_key="$2"
+  _settings_file="${UNIFI_CONFIG_DIR}/settings.yaml"
+
+  [ -f "$_settings_file" ] || return 1
+
+  _cert_uuid=$(sed -n 's/^[[:space:]]*activeCertId:[[:space:]]*\([0-9A-Fa-f-]*\).*$/\1/p' "$_settings_file" | head -n 1)
+  if ! printf '%s\n' "$_cert_uuid" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; then
+    return 1
+  fi
+
+  [ -f "${UNIFI_CONFIG_DIR}/${_cert_uuid}.crt" ] || return 1
+  [ -f "${UNIFI_CONFIG_DIR}/${_cert_uuid}.key" ] || return 1
+  cmp -s "$_source_cert" "${UNIFI_CONFIG_DIR}/${_cert_uuid}.crt" || return 1
+  cmp -s "$_source_key" "${UNIFI_CONFIG_DIR}/${_cert_uuid}.key" || return 1
+
+  printf '%s\n' "$_cert_uuid"
+}
+
+tailscale_cert_update_unifi() {
+  _cert_uuid="$1"
+  _source_cert="$2"
+  _source_key="$3"
+  _target_cert="${UNIFI_CONFIG_DIR}/${_cert_uuid}.crt"
+  _target_key="${UNIFI_CONFIG_DIR}/${_cert_uuid}.key"
+  _target_cert_backup="${_target_cert}.tailscale-unifi.bak"
+  _target_key_backup="${_target_key}.tailscale-unifi.bak"
+  _db_helper="${TAILSCALE_ROOT}/helpers/cert-db-register.sh"
+
+  if [ ! -f "$_db_helper" ]; then
+    echo "Cannot update UniFi certificate: database registration script not found"
+    return 1
+  fi
+
+  cp "$_target_cert" "$_target_cert_backup"
+  cp "$_target_key" "$_target_key_backup"
+  cp "$_source_cert" "$_target_cert"
+  cp "$_source_key" "$_target_key"
+  chmod 644 "$_target_cert"
+  chmod 600 "$_target_key"
+
+  if ! sh "$_db_helper" "$_cert_uuid" "$_target_cert" "$_target_key" "$TAILSCALE_HOSTNAME"; then
+    mv "$_target_cert_backup" "$_target_cert"
+    mv "$_target_key_backup" "$_target_key"
+    echo "Failed to update certificate in UniFi database"
+    return 1
+  fi
+
+  if ! systemctl restart unifi-core; then
+    mv "$_target_cert_backup" "$_target_cert"
+    mv "$_target_key_backup" "$_target_key"
+    sh "$_db_helper" "$_cert_uuid" "$_target_cert" "$_target_key" "$TAILSCALE_HOSTNAME" || \
+      echo "Warning: failed to restore the previous UniFi database record"
+    echo "Failed to restart UniFi Core; restored the previous certificate"
+    return 1
+  fi
+
+  rm -f "$_target_cert_backup" "$_target_key_backup"
+  echo "UniFi OS certificate updated with ID: $_cert_uuid"
+}
+
 tailscale_cert_renew() {
   cert_dir="${TAILSCALE_ROOT}/certs"
+  cert_file="$cert_dir/$TAILSCALE_HOSTNAME.crt"
+  key_file="$cert_dir/$TAILSCALE_HOSTNAME.key"
 
-  if [ ! -f "$cert_dir/$TAILSCALE_HOSTNAME.crt" ] || [ ! -f "$cert_dir/$TAILSCALE_HOSTNAME.key" ]; then
+  if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
       echo "Certificate not found for $TAILSCALE_HOSTNAME"
       echo "Use '$0 cert generate' to create a new certificate"
       exit 1
@@ -270,18 +348,34 @@ tailscale_cert_renew() {
   echo "Renewing certificate for $TAILSCALE_HOSTNAME..."
 
   # Backup existing certificates
-  cp "$cert_dir/$TAILSCALE_HOSTNAME.crt" "$cert_dir/$TAILSCALE_HOSTNAME.crt.bak"
-  cp "$cert_dir/$TAILSCALE_HOSTNAME.key" "$cert_dir/$TAILSCALE_HOSTNAME.key.bak"
+  cp "$cert_file" "$cert_file.bak"
+  cp "$key_file" "$key_file.bak"
 
-  if tailscale cert --cert-file "$cert_dir/$TAILSCALE_HOSTNAME.crt" --key-file "$cert_dir/$TAILSCALE_HOSTNAME.key" "$TAILSCALE_HOSTNAME"; then
-      chmod 644 "$cert_dir/$TAILSCALE_HOSTNAME.crt"
-      chmod 600 "$cert_dir/$TAILSCALE_HOSTNAME.key"
-      rm -f "$cert_dir/$TAILSCALE_HOSTNAME.crt.bak" "$cert_dir/$TAILSCALE_HOSTNAME.key.bak"
+  installed_unifi_uuid=""
+  if installed_unifi_uuid=$(tailscale_cert_installed_unifi_uuid "$cert_file.bak" "$key_file.bak"); then
+    echo "Found matching installed UniFi certificate with ID: $installed_unifi_uuid"
+  fi
+
+  if tailscale cert --cert-file "$cert_file" --key-file "$key_file" "$TAILSCALE_HOSTNAME"; then
+      chmod 644 "$cert_file"
+      chmod 600 "$key_file"
+
+      if [ -n "$installed_unifi_uuid" ] && \
+         { ! cmp -s "$cert_file.bak" "$cert_file" || ! cmp -s "$key_file.bak" "$key_file"; }; then
+          if ! tailscale_cert_update_unifi "$installed_unifi_uuid" "$cert_file" "$key_file"; then
+              mv "$cert_file.bak" "$cert_file"
+              mv "$key_file.bak" "$key_file"
+              echo "Failed to update the installed UniFi certificate; restored the previous Tailscale certificate"
+              exit 1
+          fi
+      fi
+
+      rm -f "$cert_file.bak" "$key_file.bak"
       echo "Certificate renewed successfully"
   else
       # Restore backups on failure
-      mv "$cert_dir/$TAILSCALE_HOSTNAME.crt.bak" "$cert_dir/$TAILSCALE_HOSTNAME.crt"
-      mv "$cert_dir/$TAILSCALE_HOSTNAME.key.bak" "$cert_dir/$TAILSCALE_HOSTNAME.key"
+      mv "$cert_file.bak" "$cert_file"
+      mv "$key_file.bak" "$key_file"
       echo "Failed to renew certificate"
       exit 1
   fi
@@ -321,24 +415,24 @@ tailscale_cert_install_unifi() {
   echo "Installing certificate for UniFi controller..."
 
   # Install for UniFi OS (nginx)
-  if [ -d "/data/unifi-core/config" ]; then
+  if [ -d "$UNIFI_CONFIG_DIR" ]; then
       echo "Installing certificate for UniFi OS web interface..."
 
       # Generate a UUID for the certificate
       cert_uuid=$(cat /proc/sys/kernel/random/uuid)
 
       # Copy certificates with UUID names
-      cp "$cert_dir/$TAILSCALE_HOSTNAME.crt" "/data/unifi-core/config/$cert_uuid.crt"
-      cp "$cert_dir/$TAILSCALE_HOSTNAME.key" "/data/unifi-core/config/$cert_uuid.key"
+      cp "$cert_dir/$TAILSCALE_HOSTNAME.crt" "$UNIFI_CONFIG_DIR/$cert_uuid.crt"
+      cp "$cert_dir/$TAILSCALE_HOSTNAME.key" "$UNIFI_CONFIG_DIR/$cert_uuid.key"
 
       # Set proper permissions
-      chmod 644 "/data/unifi-core/config/$cert_uuid.crt"
-      chmod 600 "/data/unifi-core/config/$cert_uuid.key"
+      chmod 644 "$UNIFI_CONFIG_DIR/$cert_uuid.crt"
+      chmod 600 "$UNIFI_CONFIG_DIR/$cert_uuid.key"
 
       # Register certificate in PostgreSQL database for persistence
       if [ -f "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" ]; then
           echo "Registering certificate in database..."
-          if ! sh "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" "$cert_uuid" "/data/unifi-core/config/$cert_uuid.crt" "/data/unifi-core/config/$cert_uuid.key" "$TAILSCALE_HOSTNAME"; then
+          if ! sh "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" "$cert_uuid" "$UNIFI_CONFIG_DIR/$cert_uuid.crt" "$UNIFI_CONFIG_DIR/$cert_uuid.key" "$TAILSCALE_HOSTNAME"; then
               echo "Failed to register certificate in UniFi database"
               exit 1
           fi
@@ -347,18 +441,18 @@ tailscale_cert_install_unifi() {
       fi
 
       # Update nginx configuration
-      cat > /data/unifi-core/config/http/local-certs.conf <<EOF
-ssl_certificate     /data/unifi-core/config/$cert_uuid.crt;
-ssl_certificate_key /data/unifi-core/config/$cert_uuid.key;
+      cat > "$UNIFI_CONFIG_DIR/http/local-certs.conf" <<EOF
+ssl_certificate     $UNIFI_CONFIG_DIR/$cert_uuid.crt;
+ssl_certificate_key $UNIFI_CONFIG_DIR/$cert_uuid.key;
 EOF
 
       # Update settings.yaml to activate the certificate
-      if grep -q "activeCertId:" /data/unifi-core/config/settings.yaml 2>/dev/null; then
+      if grep -q "activeCertId:" "$UNIFI_CONFIG_DIR/settings.yaml" 2>/dev/null; then
           # Update existing activeCertId
-          sed -i "s/activeCertId: .*/activeCertId: $cert_uuid/" /data/unifi-core/config/settings.yaml
+          sed -i "s/activeCertId: .*/activeCertId: $cert_uuid/" "$UNIFI_CONFIG_DIR/settings.yaml"
       else
           # Add activeCertId if it doesn't exist
-          echo "activeCertId: $cert_uuid" >> /data/unifi-core/config/settings.yaml
+          echo "activeCertId: $cert_uuid" >> "$UNIFI_CONFIG_DIR/settings.yaml"
       fi
 
       echo "UniFi OS certificate installed with ID: $cert_uuid"
@@ -498,6 +592,7 @@ case $1 in
     # first means the units are healthy for the next boot even if the steps
     # below fail.
     ensure_systemd_units
+    repair_cert_renewal_units_if_configured
 
     if ! command -v tailscale >/dev/null 2>&1; then
       tailscale_install

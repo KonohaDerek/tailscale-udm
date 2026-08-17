@@ -41,6 +41,10 @@ case "\$1" in
         echo "--## systemctl start \$2 ##--"
         touch "${WORKDIR}/\$2.started"
         ;;
+    "restart")
+        echo "--## systemctl restart \$2 ##--"
+        touch "${WORKDIR}/\$2.restarted"
+        ;;
     *)
         echo "Unexpected command: \${1}"
         exit 1
@@ -137,6 +141,87 @@ test_cert_renew() {
     rm -rf "$TAILSCALE_ROOT/certs"
 }
 
+test_cert_renew_updates_installed_unifi_cert() {
+    cert_uuid="12345678-1234-1234-1234-123456789012"
+    unifi_config_dir="${WORKDIR}/unifi-core/config"
+
+    mkdir -p "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+    touch "$TAILSCALED_SOCK"
+    echo "OLD CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
+    echo "OLD KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
+    echo "OLD CERT" > "$unifi_config_dir/$cert_uuid.crt"
+    echo "OLD KEY" > "$unifi_config_dir/$cert_uuid.key"
+    echo "activeCertId: $cert_uuid" > "$unifi_config_dir/settings.yaml"
+    mock "$TAILSCALE_ROOT/helpers/cert-db-register.sh"
+
+    output=$(UNIFI_CONFIG_DIR="$unifi_config_dir" "$MANAGE_SH" cert renew 2>&1)
+
+    assert_contains "$output" "UniFi OS certificate updated" \
+        "Renewal updates the installed UniFi certificate"
+    assert_eq "CERTIFICATE" "$(cat "$unifi_config_dir/$cert_uuid.crt")" \
+        "Installed UniFi certificate contains the renewed certificate"
+    assert_eq "PRIVATE KEY" "$(cat "$unifi_config_dir/$cert_uuid.key")" \
+        "Installed UniFi key contains the renewed private key"
+    assert_contains "$(cat "$TAILSCALE_ROOT/helpers/cert-db-register.sh.args")" "$cert_uuid" \
+        "Renewal updates the existing UniFi database record"
+    assert_file_exists "$WORKDIR/unifi-core.restarted" \
+        "Renewal restarts UniFi Core after installing a changed certificate"
+
+    rm -rf "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+    rm -f "$WORKDIR/unifi-core.restarted"
+}
+
+test_cert_renew_does_not_replace_unrelated_unifi_cert() {
+    cert_uuid="12345678-1234-1234-1234-123456789012"
+    unifi_config_dir="${WORKDIR}/unifi-core/config"
+
+    mkdir -p "$TAILSCALE_ROOT/certs" "$unifi_config_dir"
+    touch "$TAILSCALED_SOCK"
+    echo "OLD CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
+    echo "OLD KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
+    echo "UNRELATED CERT" > "$unifi_config_dir/$cert_uuid.crt"
+    echo "UNRELATED KEY" > "$unifi_config_dir/$cert_uuid.key"
+    echo "activeCertId: $cert_uuid" > "$unifi_config_dir/settings.yaml"
+
+    output=$(UNIFI_CONFIG_DIR="$unifi_config_dir" "$MANAGE_SH" cert renew 2>&1)
+
+    assert_not_contains "$output" "UniFi OS certificate updated" \
+        "Renewal does not replace an unrelated active UniFi certificate"
+    assert_eq "UNRELATED CERT" "$(cat "$unifi_config_dir/$cert_uuid.crt")" \
+        "Unrelated active UniFi certificate remains unchanged"
+    [[ ! -f "$WORKDIR/unifi-core.restarted" ]]
+    assert "Renewal does not restart UniFi Core when its certificate is unrelated"
+
+    rm -rf "$TAILSCALE_ROOT/certs" "$unifi_config_dir"
+}
+
+test_cert_renew_rolls_back_when_unifi_update_fails() {
+    cert_uuid="12345678-1234-1234-1234-123456789012"
+    unifi_config_dir="${WORKDIR}/unifi-core/config"
+
+    mkdir -p "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+    touch "$TAILSCALED_SOCK"
+    echo "OLD CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
+    echo "OLD KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
+    echo "OLD CERT" > "$unifi_config_dir/$cert_uuid.crt"
+    echo "OLD KEY" > "$unifi_config_dir/$cert_uuid.key"
+    echo "activeCertId: $cert_uuid" > "$unifi_config_dir/settings.yaml"
+    mock "$TAILSCALE_ROOT/helpers/cert-db-register.sh" "database unavailable" 1
+
+    output=$(UNIFI_CONFIG_DIR="$unifi_config_dir" "$MANAGE_SH" cert renew 2>&1) || true
+
+    assert_contains "$output" "restored the previous Tailscale certificate" \
+        "Renewal reports rollback when the UniFi database update fails"
+    assert_eq "OLD CERT" "$(cat "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt")" \
+        "Tailscale certificate is rolled back after a UniFi update failure"
+    assert_eq "OLD CERT" "$(cat "$unifi_config_dir/$cert_uuid.crt")" \
+        "Installed UniFi certificate is rolled back after a database failure"
+    [[ ! -f "$WORKDIR/unifi-core.restarted" ]]
+    assert "UniFi Core is not restarted after a database update failure"
+
+    rm -rf "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+}
+
 # Test certificate info
 test_cert_info() {
     mkdir -p "$TAILSCALE_ROOT/certs"
@@ -208,6 +293,9 @@ test_cert_generate_upgrade_from_symlink() {
 # Run tests
 test_cert_generate
 test_cert_renew
+test_cert_renew_updates_installed_unifi_cert
+test_cert_renew_does_not_replace_unrelated_unifi_cert
+test_cert_renew_rolls_back_when_unifi_update_fails
 test_cert_info
 test_cert_not_running
 test_cert_help
