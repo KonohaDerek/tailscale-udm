@@ -88,6 +88,9 @@ ensure_systemd_units() {
 }
 
 ensure_cert_renewal_units() {
+  [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.service" ] || return 0
+  [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.timer" ] || return 0
+
   echo "Installing certificate auto-renewal timer..."
   install_systemd_unit tailscale-cert-renewal.service
   install_systemd_unit tailscale-cert-renewal.timer
@@ -260,9 +263,7 @@ tailscale_cert_generate() {
 
       # Install (or repair) the cert-renewal units.  install_systemd_unit removes
       # any pre-existing symlink before copying (see its comment for why).
-      if [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.service" ] && [ -f "${PACKAGE_ROOT}/tailscale-cert-renewal.timer" ]; then
-          ensure_cert_renewal_units
-      fi
+      ensure_cert_renewal_units
   else
       echo "Failed to generate certificate. Ensure:"
       echo "  - Your Tailscale session is valid and you are logged in"
@@ -292,46 +293,32 @@ tailscale_cert_installed_unifi_uuid() {
   printf '%s\n' "$_cert_uuid"
 }
 
-tailscale_cert_update_unifi() {
+tailscale_cert_write_unifi() {
   _cert_uuid="$1"
   _source_cert="$2"
   _source_key="$3"
   _target_cert="${UNIFI_CONFIG_DIR}/${_cert_uuid}.crt"
   _target_key="${UNIFI_CONFIG_DIR}/${_cert_uuid}.key"
-  _target_cert_backup="${_target_cert}.tailscale-unifi.bak"
-  _target_key_backup="${_target_key}.tailscale-unifi.bak"
   _db_helper="${TAILSCALE_ROOT}/helpers/cert-db-register.sh"
 
   if [ ! -f "$_db_helper" ]; then
-    echo "Cannot update UniFi certificate: database registration script not found"
+    echo "Cannot install UniFi certificate: database registration script not found"
     return 1
   fi
 
-  cp "$_target_cert" "$_target_cert_backup"
-  cp "$_target_key" "$_target_key_backup"
-  cp "$_source_cert" "$_target_cert"
-  cp "$_source_key" "$_target_key"
-  chmod 644 "$_target_cert"
-  chmod 600 "$_target_key"
+  if ! cp "$_source_cert" "$_target_cert" || \
+     ! cp "$_source_key" "$_target_key" || \
+     ! chmod 644 "$_target_cert" || \
+     ! chmod 600 "$_target_key"; then
+    echo "Failed to copy certificate into UniFi configuration"
+    return 1
+  fi
 
+  echo "Registering certificate in database..."
   if ! sh "$_db_helper" "$_cert_uuid" "$_target_cert" "$_target_key" "$TAILSCALE_HOSTNAME"; then
-    mv "$_target_cert_backup" "$_target_cert"
-    mv "$_target_key_backup" "$_target_key"
-    echo "Failed to update certificate in UniFi database"
+    echo "Failed to register certificate in UniFi database"
     return 1
   fi
-
-  if ! systemctl restart unifi-core; then
-    mv "$_target_cert_backup" "$_target_cert"
-    mv "$_target_key_backup" "$_target_key"
-    sh "$_db_helper" "$_cert_uuid" "$_target_cert" "$_target_key" "$TAILSCALE_HOSTNAME" || \
-      echo "Warning: failed to restore the previous UniFi database record"
-    echo "Failed to restart UniFi Core; restored the previous certificate"
-    return 1
-  fi
-
-  rm -f "$_target_cert_backup" "$_target_key_backup"
-  echo "UniFi OS certificate updated with ID: $_cert_uuid"
 }
 
 tailscale_cert_renew() {
@@ -362,10 +349,19 @@ tailscale_cert_renew() {
 
       if [ -n "$installed_unifi_uuid" ] && \
          { ! cmp -s "$cert_file.bak" "$cert_file" || ! cmp -s "$key_file.bak" "$key_file"; }; then
-          if ! tailscale_cert_update_unifi "$installed_unifi_uuid" "$cert_file" "$key_file"; then
+          if ! tailscale_cert_write_unifi "$installed_unifi_uuid" "$cert_file" "$key_file"; then
+              tailscale_cert_write_unifi "$installed_unifi_uuid" "$cert_file.bak" "$key_file.bak" || \
+                echo "Warning: failed to restore the previous UniFi certificate"
               mv "$cert_file.bak" "$cert_file"
               mv "$key_file.bak" "$key_file"
               echo "Failed to update the installed UniFi certificate; restored the previous Tailscale certificate"
+              exit 1
+          fi
+
+          rm -f "$cert_file.bak" "$key_file.bak"
+          echo "UniFi OS certificate updated with ID: $installed_unifi_uuid"
+          if ! systemctl restart unifi-core; then
+              echo "UniFi certificate was updated, but UniFi Core failed to restart"
               exit 1
           fi
       fi
@@ -421,23 +417,8 @@ tailscale_cert_install_unifi() {
       # Generate a UUID for the certificate
       cert_uuid=$(cat /proc/sys/kernel/random/uuid)
 
-      # Copy certificates with UUID names
-      cp "$cert_dir/$TAILSCALE_HOSTNAME.crt" "$UNIFI_CONFIG_DIR/$cert_uuid.crt"
-      cp "$cert_dir/$TAILSCALE_HOSTNAME.key" "$UNIFI_CONFIG_DIR/$cert_uuid.key"
-
-      # Set proper permissions
-      chmod 644 "$UNIFI_CONFIG_DIR/$cert_uuid.crt"
-      chmod 600 "$UNIFI_CONFIG_DIR/$cert_uuid.key"
-
-      # Register certificate in PostgreSQL database for persistence
-      if [ -f "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" ]; then
-          echo "Registering certificate in database..."
-          if ! sh "${TAILSCALE_ROOT}/helpers/cert-db-register.sh" "$cert_uuid" "$UNIFI_CONFIG_DIR/$cert_uuid.crt" "$UNIFI_CONFIG_DIR/$cert_uuid.key" "$TAILSCALE_HOSTNAME"; then
-              echo "Failed to register certificate in UniFi database"
-              exit 1
-          fi
-      else
-          echo "Warning: Database registration script not found. Certificate may not persist across restarts."
+      if ! tailscale_cert_write_unifi "$cert_uuid" "$cert_dir/$TAILSCALE_HOSTNAME.crt" "$cert_dir/$TAILSCALE_HOSTNAME.key"; then
+          exit 1
       fi
 
       # Update nginx configuration

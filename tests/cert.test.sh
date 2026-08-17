@@ -43,6 +43,9 @@ case "\$1" in
         ;;
     "restart")
         echo "--## systemctl restart \$2 ##--"
+        if [ -f "${WORKDIR}/fail-\$2-restart" ]; then
+            exit 1
+        fi
         touch "${WORKDIR}/\$2.restarted"
         ;;
     *)
@@ -222,6 +225,32 @@ test_cert_renew_rolls_back_when_unifi_update_fails() {
     rm -rf "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
 }
 
+test_cert_renew_keeps_updated_state_when_unifi_restart_fails() {
+    cert_uuid="12345678-1234-1234-1234-123456789012"
+    unifi_config_dir="${WORKDIR}/unifi-core/config"
+
+    mkdir -p "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+    touch "$TAILSCALED_SOCK" "$WORKDIR/fail-unifi-core-restart"
+    echo "OLD CERT" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt"
+    echo "OLD KEY" > "$TAILSCALE_ROOT/certs/test-host.example.ts.net.key"
+    echo "OLD CERT" > "$unifi_config_dir/$cert_uuid.crt"
+    echo "OLD KEY" > "$unifi_config_dir/$cert_uuid.key"
+    echo "activeCertId: $cert_uuid" > "$unifi_config_dir/settings.yaml"
+    mock "$TAILSCALE_ROOT/helpers/cert-db-register.sh"
+
+    output=$(UNIFI_CONFIG_DIR="$unifi_config_dir" "$MANAGE_SH" cert renew 2>&1) || true
+
+    assert_contains "$output" "UniFi certificate was updated, but UniFi Core failed to restart" \
+        "Renewal reports when the updated certificate could not be activated"
+    assert_eq "CERTIFICATE" "$(cat "$TAILSCALE_ROOT/certs/test-host.example.ts.net.crt")" \
+        "Renewed Tailscale certificate remains after a UniFi restart failure"
+    assert_eq "CERTIFICATE" "$(cat "$unifi_config_dir/$cert_uuid.crt")" \
+        "Updated UniFi certificate remains after a restart failure"
+
+    rm -rf "$TAILSCALE_ROOT/certs" "$TAILSCALE_ROOT/helpers" "$unifi_config_dir"
+    rm -f "$WORKDIR/fail-unifi-core-restart"
+}
+
 # Test certificate info
 test_cert_info() {
     mkdir -p "$TAILSCALE_ROOT/certs"
@@ -296,6 +325,7 @@ test_cert_renew
 test_cert_renew_updates_installed_unifi_cert
 test_cert_renew_does_not_replace_unrelated_unifi_cert
 test_cert_renew_rolls_back_when_unifi_update_fails
+test_cert_renew_keeps_updated_state_when_unifi_restart_fails
 test_cert_info
 test_cert_not_running
 test_cert_help
