@@ -62,7 +62,7 @@ print_device_advisories() {
       ;;
     *"Network Video Recorder"*|*"UNVR"*|*"UNAS"*|*"Storage"*)
       device_advisory "Userspace networking only (${_model})" \
-        "This device's kernel lacks TUN support, so Tailscale runs in userspace networking mode and cannot act as a subnet router or exit node." \
+        "This device's kernel lacks TUN support, so Tailscale runs in userspace networking mode: inbound subnet routing and exit node use work, but traffic is NAT-ed and local machines cannot reach the tailnet." \
         "userspace-networking-on-nvr-and-nas-devices"
       ;;
   esac

@@ -109,7 +109,16 @@ The installer and `manage.sh status` print a `NOTICE:` for hardware with known d
 
 **Cause:** Tailscale coalesces decrypted TCP segments into large GSO super-packets before handing them to the kernel. The Cloud Gateway's LAN port TSO engine mishandles these forwarded packets, so only small retransmitted segments get through. This is an upstream issue between Tailscale and UniFi OS; the settings below work around it.
 
-**Fix:** Tell Tailscale not to build the super-packets in the first place.
+**Confirm the cause:** Before changing Tailscale's configuration, prove that TSO on the LAN bridge is responsible. Disable it at runtime and re-run your throughput test (`iperf3` from a tailnet peer to a LAN host, or a large file transfer):
+
+```sh
+# Substitute the bridge for the affected network; br0 is the default LAN
+ethtool -K br0 tso off
+```
+
+If throughput recovers, this entry applies to you. Re-enable TSO afterwards with `ethtool -K br0 tso on`, since this setting affects all routed traffic on the bridge, is lost on reboot, and can be silently reverted when UniFi reconfigures the bridge. If throughput does not recover, the cause is elsewhere; see [Reporting device-specific issues](#reporting-device-specific-issues).
+
+**Fix:** Tell Tailscale not to build the super-packets in the first place, so the LAN port never receives them.
 
 ```sh
 # 1. Add the setting to your tailscale-env file
@@ -122,17 +131,20 @@ echo 'TS_TUN_DISABLE_TCP_GRO=1' >> /data/tailscale/tailscale-env
 /data/tailscale/manage.sh restart
 ```
 
-This persists across reboots and package upgrades. As a runtime-only alternative, `ethtool -K br0 tso off` (substitute the bridge for your VLAN) also restores throughput but is lost on reboot, applies to all routed traffic on that bridge, and can be silently reverted when UniFi reconfigures the bridge.
+This persists across reboots and package upgrades and only affects Tailscale traffic.
+
+> [!NOTE]
+> `TS_TUN_DISABLE_TCP_GRO=1` trades a hardware offload for correctness. On a device that is not affected by this issue, Tailscale has to hand every decrypted segment to the kernel individually rather than in batches, which raises CPU usage per packet and can lower peak TCP throughput over the tunnel. Only set it once the confirmation step above shows that it is needed.
 
 ### Userspace networking on NVR and NAS devices
 
 **Affects:** UniFi Next-Gen NVR and Next-Gen Storage families (UNVR, UNVR Pro, UNAS Pro, and similar).
 
-**Symptoms:** No `tailscale0` interface, and `tailscale up --advertise-routes` or `--advertise-exit-node` does not route any traffic.
+**Symptoms:** No `tailscale0` interface. Machines on the local network cannot reach tailnet addresses or subnets advertised by other nodes, and connections arriving from the tailnet appear to LAN hosts to originate from the device itself.
 
-**Cause:** These kernels do not ship the TUN module, so the installer configures `--tun userspace-networking` automatically. In this mode Tailscale can reach out to the tailnet and accept inbound connections to the device itself, but cannot act as a subnet router or exit node.
+**Cause:** These kernels do not ship the TUN module, so the installer configures `--tun userspace-networking` automatically. In this mode Tailscale terminates tailnet connections in its own network stack and re-originates them from the device, effectively NAT-ing all traffic. Using the device as an exit node or as a subnet router for inbound access to the local network still works, but local machines see the device's address rather than the tailnet peer's, and traffic from the local network cannot be routed into the tailnet, so site-to-site routing is not possible.
 
-**Fix:** None available on this hardware. Run your subnet router on a Cloud Gateway or another device with TUN support.
+**Fix:** None available on this hardware. If you need site-to-site routing or want local machines to reach the tailnet, run that subnet router on a Cloud Gateway or another device with TUN support.
 
 ### Reporting device-specific issues
 
