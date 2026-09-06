@@ -7,6 +7,66 @@ SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 TAILSCALED_DEFAULTS_FILE="${TAILSCALED_DEFAULTS_FILE:-/etc/default/tailscaled}"
 TAILSCALED_ENVIRONMENT_MARKER="# tailscale-unifi managed environment"
 UNIFI_CONFIG_DIR="${UNIFI_CONFIG_DIR:-/data/unifi-core/config}"
+README_URL="https://github.com/SierraSoftworks/tailscale-unifi"
+
+# Best-effort identification of the UniFi hardware we are running on, used to
+# surface device-specific guidance from the README.  Returns the full model name
+# (e.g. "UniFi Cloud Gateway Max") on UniFi OS 2+, falls back to the product
+# prefix in /usr/lib/version (e.g. "UNVRPRO") on older firmware, and is empty
+# when neither source is available.  TAILSCALE_DEVICE_MODEL overrides detection.
+detect_device_model() {
+  if [ -n "${TAILSCALE_DEVICE_MODEL:-}" ]; then
+    echo "$TAILSCALE_DEVICE_MODEL"
+  elif command -v ubnt-device-info >/dev/null 2>&1; then
+    ubnt-device-info model 2>/dev/null || true
+  elif [ -f /usr/lib/version ]; then
+    cut -d. -f1 /usr/lib/version
+  fi
+}
+
+device_advisory() {
+  _advisory_title="$1"
+  _advisory_body="$2"
+  _advisory_anchor="$3"
+
+  {
+    echo ""
+    echo "NOTICE: ${_advisory_title}"
+    echo "  ${_advisory_body}"
+    echo "  See: ${README_URL}#${_advisory_anchor}"
+  } >&2
+}
+
+# Print README pointers for known device-specific issues.  Each case below maps a
+# model (as returned by detect_device_model) to a README "Troubleshooting" entry;
+# entries are skipped when the documented mitigation is already configured.
+# Advisories are informational only and never change configuration.  Set
+# TAILSCALE_ADVISORIES="false" in tailscale-env to silence them.
+print_device_advisories() {
+  if [ -f "${TAILSCALE_ROOT}/tailscale-env" ]; then
+    # shellcheck source=package/tailscale-env
+    . "${TAILSCALE_ROOT}/tailscale-env"
+  fi
+  [ "${TAILSCALE_ADVISORIES:-true}" = "true" ] || return 0
+
+  _model="$(detect_device_model)"
+  [ -n "$_model" ] || return 0
+
+  case "$_model" in
+    *"Cloud Gateway"*|UCG*)
+      if [ "${TS_TUN_DISABLE_TCP_GRO:-0}" != "1" ] && ! echo "${TAILSCALED_FLAGS:-}" | grep -q "userspace-networking"; then
+        device_advisory "Slow TCP throughput reported on Cloud Gateway devices (${_model})" \
+          "TCP traffic forwarded to LAN hosts over Tailscale can collapse to a few hundred kbps on some Cloud Gateway models. Setting TS_TUN_DISABLE_TCP_GRO=1 in ${TAILSCALE_ROOT}/tailscale-env resolves this." \
+          "slow-tcp-throughput-on-cloud-gateway-devices"
+      fi
+      ;;
+    *"Network Video Recorder"*|*"UNVR"*|*"UNAS"*|*"Storage"*)
+      device_advisory "Userspace networking only (${_model})" \
+        "This device's kernel lacks TUN support, so Tailscale runs in userspace networking mode and cannot act as a subnet router or exit node." \
+        "userspace-networking-on-nvr-and-nas-devices"
+      ;;
+  esac
+}
 
 tailscale_status() {
   if ! command -v tailscale >/dev/null 2>&1; then
@@ -18,6 +78,8 @@ tailscale_status() {
   else
     echo "Tailscaled is not running"
   fi
+
+  print_device_advisories
 }
 
 tailscale_start() {
@@ -186,6 +248,8 @@ tailscale_install() {
   # Install (or repair) the systemd units that reinstall Tailscale after a
   # firmware update.  See ensure_systemd_units / install_systemd_unit above.
   ensure_systemd_units
+
+  print_device_advisories
 
   echo "Installation complete, run '$0 start' to start Tailscale"
 }
@@ -529,7 +593,7 @@ case $1 in
   "install")
     if systemctl is-active --quiet tailscaled; then
       echo "Tailscale is already installed and running, if you wish to update it, run '$0 update'"
-      echo "If you wish to force a reinstall, run '$0 install!'"
+      echo "If you have changed ${TAILSCALE_ROOT}/tailscale-env or wish to force a reinstall, run '$0 install!'"
       exit 0
     fi
 

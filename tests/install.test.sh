@@ -125,6 +125,14 @@ assert_not_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "TS_TUN_DISABLE_TCP_G
 assert_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "UNRELATED_SETTING=\"preserved\"" "Removing a TS_ variable should preserve the original defaults"
 [[ "$(grep -c '^# tailscale-unifi managed environment$' "${TAILSCALED_DEFAULTS_FILE}")" -eq 1 ]]; assert "The empty managed environment section should remain singular"
 
+# ── device advisories are surfaced by the installer ───────────────────────────
+# The TS_ variable was removed above, so a Cloud Gateway model should now be told
+# about the README mitigation.  Advisories go to stderr and never touch config.
+install_out=$(TAILSCALE_DEVICE_MODEL="UniFi Cloud Gateway Max" "${ROOT}/package/manage.sh" install 2>&1); assert "Install should succeed while printing a device advisory"
+assert_contains "$install_out" "NOTICE:" "installer prints a device advisory for Cloud Gateway hardware"
+assert_contains "$install_out" "slow-tcp-throughput-on-cloud-gateway-devices" "installer advisory links to the README troubleshooting entry"
+assert_not_contains "$(cat "${TAILSCALED_DEFAULTS_FILE}")" "TS_TUN_DISABLE_TCP_GRO=" "advisories do not change the tailscaled defaults"
+
 # After the fix the destination must be a regular file, not a symlink.
 # If rm -f silently failed and cp wrote through the symlink instead, the
 # destination would still appear as a file — only -L distinguishes the two.

@@ -28,7 +28,7 @@ This package is compatible with UniFi OS 2.x or later and works on the following
 - Any UniFi device running UniFi OS 2.x or later and not listed above or below
 
 > [!NOTE]
-> These devices are supported only in userspace networking mode, because their kernel does not support the required modules.
+> These devices are supported only in userspace networking mode, because their kernel does not support the required modules. See [Userspace networking on NVR and NAS devices](#userspace-networking-on-nvr-and-nas-devices).
 
 - Any variant of the UniFi Next-Gen NVR family
 - Any variant of the UniFi Next-Gen Storage family
@@ -97,17 +97,69 @@ To remove Tailscale, run the following command.
 
 If you have an idea for how this can be improved, please create a [PR](https://github.com/SierraSoftworks/tailscale-unifi/pulls), and we’ll be happy to incorporate the changes.
 
+## Troubleshooting
+
+The installer and `manage.sh status` print a `NOTICE:` for hardware with known device-specific issues, linking to the relevant entry below. Notices are informational only and never change your configuration. To silence them, set `TAILSCALE_ADVISORIES="false"` in `/data/tailscale/tailscale-env`.
+
+### Slow TCP throughput on Cloud Gateway devices
+
+**Affects:** UniFi Cloud Gateway Max (reported in [#205](https://github.com/SierraSoftworks/tailscale-unifi/issues/205)); other Cloud Gateway models may be affected.
+
+**Symptoms:** With Tailscale running in TUN mode as a subnet router, TCP connections from tailnet peers to LAN hosts behind the gateway are unusably slow (hundreds of kbps, heavy retransmits) while `ping` works and userspace networking mode runs at full speed.
+
+**Cause:** Tailscale coalesces decrypted TCP segments into large GSO super-packets before handing them to the kernel. The Cloud Gateway's LAN port TSO engine mishandles these forwarded packets, so only small retransmitted segments get through. This is an upstream issue between Tailscale and UniFi OS; the settings below work around it.
+
+**Fix:** Tell Tailscale not to build the super-packets in the first place.
+
+```sh
+# 1. Add the setting to your tailscale-env file
+echo 'TS_TUN_DISABLE_TCP_GRO=1' >> /data/tailscale/tailscale-env
+
+# 2. Apply the configuration (install! is required while tailscaled is running)
+/data/tailscale/manage.sh install!
+
+# 3. Restart tailscaled to pick up the new environment
+/data/tailscale/manage.sh restart
+```
+
+This persists across reboots and package upgrades. As a runtime-only alternative, `ethtool -K br0 tso off` (substitute the bridge for your VLAN) also restores throughput but is lost on reboot, applies to all routed traffic on that bridge, and can be silently reverted when UniFi reconfigures the bridge.
+
+### Userspace networking on NVR and NAS devices
+
+**Affects:** UniFi Next-Gen NVR and Next-Gen Storage families (UNVR, UNVR Pro, UNAS Pro, and similar).
+
+**Symptoms:** No `tailscale0` interface, and `tailscale up --advertise-routes` or `--advertise-exit-node` does not route any traffic.
+
+**Cause:** These kernels do not ship the TUN module, so the installer configures `--tun userspace-networking` automatically. In this mode Tailscale can reach out to the tailnet and accept inbound connections to the device itself, but cannot act as a subnet router or exit node.
+
+**Fix:** None available on this hardware. Run your subnet router on a Cloud Gateway or another device with TUN support.
+
+### Reporting device-specific issues
+
+When [opening an issue](https://github.com/SierraSoftworks/tailscale-unifi/issues), include the output of the following commands so the problem can be tied to a specific model, firmware and kernel:
+
+```sh
+ubnt-device-info model
+ubnt-device-info firmware_detail
+uname -r
+tailscale version
+cat /data/tailscale/tailscale-env
+```
+
 ## Frequently Asked Questions
 
 ### How do I configure environment variables for tailscaled?
 
-Add any `TS_` environment variables to `/data/tailscale/tailscale-env`. For example:
+Add any `TS_` environment variables to `/data/tailscale/tailscale-env`, one per line. For example, the setting used in [Slow TCP throughput on Cloud Gateway devices](#slow-tcp-throughput-on-cloud-gateway-devices):
 
 ```sh
 TS_TUN_DISABLE_TCP_GRO=1
 ```
 
-Then run `/data/tailscale/manage.sh install`. The installer replaces the managed environment section in `/etc/default/tailscaled` (and removes/overwrites any existing `TS_*` entries there) and restarts the `tailscaled` service with the new configuration. Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section.
+Then run `/data/tailscale/manage.sh install!` followed by `/data/tailscale/manage.sh restart`. The installer replaces the managed environment section in `/etc/default/tailscaled` (and removes/overwrites any existing `TS_*` entries there). Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section. These settings survive `manage.sh update` and package upgrades.
+
+> [!NOTE]
+> Plain `manage.sh install` exits early when `tailscaled` is already running, so configuration changes only take effect with `install!`.
 
 ### How do I advertise routes?
 
@@ -154,9 +206,10 @@ TAILSCALED_FLAGS=""
 TAILSCALE_FLAGS=""
 TAILSCALE_AUTOUPDATE="true"
 TAILSCALE_CHANNEL="stable"
+TAILSCALE_ADVISORIES="true"
 ```
 
-Then re-configure Tailscale by running `/data/tailscale/manage.sh install`, which updates your `/etc/default/tailscaled` file to use the new configuration and restarts the `tailscaled` service.
+Then re-configure Tailscale by running `/data/tailscale/manage.sh install!`, which updates your `/etc/default/tailscaled` file to use the new configuration and restarts the `tailscaled` service.
 
 #### Verifying Your Setup
 
