@@ -37,28 +37,41 @@ device_advisory() {
   } >&2
 }
 
+# Read a single KEY="VALUE" (or KEY=VALUE) setting from tailscale-env without
+# executing the file, so advisories never widen what `status` runs as shell.
+read_env_setting() {
+  _env_file="${TAILSCALE_ROOT}/tailscale-env"
+  [ -f "$_env_file" ] || return 0
+  sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" "$_env_file" | tail -n 1
+}
+
 # Print README pointers for known device-specific issues.  Each case below maps a
 # model (as returned by detect_device_model) to a README "Troubleshooting" entry;
 # entries are skipped when the documented mitigation is already configured.
 # Advisories are informational only and never change configuration.  Set
 # TAILSCALE_ADVISORIES="false" in tailscale-env to silence them.
 print_device_advisories() {
-  if [ -f "${TAILSCALE_ROOT}/tailscale-env" ]; then
-    # shellcheck source=package/tailscale-env
-    . "${TAILSCALE_ROOT}/tailscale-env"
-  fi
-  [ "${TAILSCALE_ADVISORIES:-true}" = "true" ] || return 0
+  _advisories="$(read_env_setting TAILSCALE_ADVISORIES)"
+  [ "${_advisories:-true}" = "true" ] || return 0
 
   _model="$(detect_device_model)"
   [ -n "$_model" ] || return 0
 
+  _tun_tcp_gro="$(read_env_setting TS_TUN_DISABLE_TCP_GRO)"
+  _tailscaled_flags="$(read_env_setting TAILSCALED_FLAGS)"
+
   case "$_model" in
     *"Cloud Gateway"*|UCG*)
-      if [ "${TS_TUN_DISABLE_TCP_GRO:-0}" != "1" ] && ! echo "${TAILSCALED_FLAGS:-}" | grep -q "userspace-networking"; then
-        device_advisory "Slow TCP throughput reported on Cloud Gateway devices (${_model})" \
-          "TCP traffic forwarded to LAN hosts over Tailscale can collapse to a few hundred kbps on some Cloud Gateway models. Setting TS_TUN_DISABLE_TCP_GRO=1 in ${TAILSCALE_ROOT}/tailscale-env resolves this." \
-          "slow-tcp-throughput-on-cloud-gateway-devices"
-      fi
+      case "$_tailscaled_flags" in
+        *userspace-networking*) ;;
+        *)
+          if [ "${_tun_tcp_gro:-0}" != "1" ]; then
+            device_advisory "Slow TCP throughput reported on Cloud Gateway devices (${_model})" \
+              "TCP traffic forwarded to LAN hosts over Tailscale can collapse to a few hundred kbps on some Cloud Gateway models. Setting TS_TUN_DISABLE_TCP_GRO=1 in ${TAILSCALE_ROOT}/tailscale-env resolves this." \
+              "slow-tcp-throughput-on-cloud-gateway-devices"
+          fi
+          ;;
+      esac
       ;;
     *"Network Video Recorder"*|*"UNVR"*|*"UNAS"*|*"Storage"*)
       device_advisory "Userspace networking only (${_model})" \

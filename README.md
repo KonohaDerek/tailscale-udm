@@ -124,11 +124,9 @@ If throughput recovers, this entry applies to you. Re-enable TSO afterwards with
 # 1. Add the setting to your tailscale-env file
 echo 'TS_TUN_DISABLE_TCP_GRO=1' >> /data/tailscale/tailscale-env
 
-# 2. Apply the configuration (install! is required while tailscaled is running)
+# 2. Apply the configuration and restart tailscaled
+#    (install! is required while tailscaled is running)
 /data/tailscale/manage.sh install!
-
-# 3. Restart tailscaled to pick up the new environment
-/data/tailscale/manage.sh restart
 ```
 
 This persists across reboots and package upgrades and only affects Tailscale traffic.
@@ -168,7 +166,7 @@ Add any `TS_` environment variables to `/data/tailscale/tailscale-env`, one per 
 TS_TUN_DISABLE_TCP_GRO=1
 ```
 
-Then run `/data/tailscale/manage.sh install!` followed by `/data/tailscale/manage.sh restart`. The installer replaces the managed environment section in `/etc/default/tailscaled` (and removes/overwrites any existing `TS_*` entries there). Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section. These settings survive `manage.sh update` and package upgrades.
+Then run `/data/tailscale/manage.sh install!`. The installer replaces the managed environment section in `/etc/default/tailscaled` (and removes/overwrites any existing `TS_*` entries there). Removing a `TS_` entry from `tailscale-env` and running the installer again also removes it from the managed section. `install!` restarts `tailscaled`, so no separate restart is needed. These settings survive `manage.sh update` and package upgrades.
 
 > [!NOTE]
 > Plain `manage.sh install` exits early when `tailscaled` is already running, so configuration changes only take effect with `install!`.
